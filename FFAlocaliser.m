@@ -1,0 +1,326 @@
+% FFAlocaliser.m
+%
+%         by: alex beckett and denis schluppeck
+%
+%       date: 09/07/06; mods for C84DAN by ds
+%    purpose: code for doing face and object area localiser.
+%             images courtesy of Tim Andrews (York) and others.
+%
+%             
+%
+%             
+%
+%       e.g.:
+%             FFAlocaliser()
+%             FFAlocaliser('displayname=3T-GE-debug', 'TR=1.5')
+%
+% make sure to also look at jazLocaliser.m for event-related expt
+function myscreen = FFAlocaliser( varargin )
+
+% evaluate the input arguments
+eval(evalargs(varargin));
+
+% setup default arguments
+if ieNotDefined('debug'), debug=0; end
+if ieNotDefined('displayname'), displayname = '3T-Achieva'; end
+
+
+% scanning params
+if ieNotDefined('TR'), TR=1.5; end
+if ieNotDefined('flipHV'), flipHV = [0 1]; end
+
+if ieNotDefined('cycleLength'), cycleLength = 16; end
+if ieNotDefined('numBlocks'), numBlocks = 10; end
+if ieNotDefined('trainingMode'), trainingMode=0; end
+
+% report what the parameters lead to:
+fprintf('---------\nTiming:\n')
+fprintf('TR=%.2f, l=%.1f, #blocks=%d\n', TR, cycleLength, numBlocks)
+totalTime = TR .* cycleLength .* numBlocks;
+fprintf('runtime: %.2fs\n', TR .* cycleLength .* numBlocks)
+fprintf('%s (mm:ss)\n', duration(0,0,totalTime, 'format', 'mm:ss'))
+fprintf('one ON/OFF block = %ds\n', TR .* cycleLength);
+
+
+if ieNotDefined('subject')
+  subject = 'xx'; % default
+end
+
+assert(iseven(cycleLength), 'an ODD cycle length will be problematic - please fix')
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% set up screen
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% other screen parameters
+myscreen.autoCloseScreen = 1;
+myscreen.saveData = 1;
+myscreen.datadir = './';
+myscreen.allowpause = 0;
+myscreen.eatkeys = 1;
+myscreen.displayname = displayname;
+myscreen.background = 'gray';
+myscreen.TR = TR;
+myscreen.cycleLength = cycleLength; % in TRs
+myscreen.subject = subject;
+myscreen.collectEyeData = 0;
+
+
+% set up parameters for fixation cross.
+global fixStimulus
+fixStimulus.fixLineWidth = 0.1; % big line, device units with mglMetal (!)
+fixStimulus.trainingMode = trainingMode;
+fixStimulus.diskSize = 0.0; % no disk (just superimpose on stim)
+fixStimulus.fixWidth = 1;
+
+% by default the screen params should come from mglEditScreenParams setup!!
+if debug == 1
+  % gethostname and then display the stimulus on the corresponding screen
+  % myscreen.screenParams{1} = {gethostname(),[],0,1024,768,80,[31 23],60,1,1,1.4,[],flipHV};
+  
+  myscreen.screenParams{1} = struct('computerName', gethostname(),...
+            'displayName',[], 'screenNumber', 0, ...
+		    'screenWidth', 1024, 'screenHeight', 768, 'displayDistance', 80,...
+		    'displaySize',[31 23], 'framesPerSecond', 60, 'autoCloseScreen', 1, ...
+		    'saveData', 1, 'calibType', 1, 'monitorGamma', 1.4, 'calibFilename',[], ...
+		    'flipHV', flipHV, 'digin',[],  'hideCursor', 1, 'displayPos', [],  'backtickChar', '5');
+
+  fixStimulus.fixWidth = 1; 
+  fixStimulus.diskSize = 0; 
+  
+elseif debug == 2 
+    fprintf('should not need this code!!')
+    % don't run this code now...     
+    % running at 3T for experiment
+    %   defaultMonitorGamma = 1.8;
+    %   % myscreen.screenParams{1} = {gethostname(),'',2,1280,960,231,[83 3*83/4],60,1,1,defaultMonitorGamma,'',flipHV}; % 3T nottingham
+    %     myscreen.screenParams{1} = struct('computerName', gethostname(),...
+    %             'displayName',displayname, 'screenNumber', 2, ...
+    % 		    'screenWidth', 1280, 'screenHeight', 960, 'displayDistance', 231,...
+    % 		    'displaySize',[83 3*83/4], 'framesPerSecond', 60, 'autoCloseScreen', 1, ...
+    % 		    'saveData', 1, 'calibType', 1, 'monitorGamma', defaultMonitorGamma, 'calibFilename',[], ...
+    % 		    'flipHV', flipHV, 'digin',[],  'hideCursor', 1, 'displayPos', [],  'backtickChar', '5');
+end
+
+% and init myscreen
+myscreen = initScreen(myscreen);
+
+% fix keys for our scanner setup.
+% myscreen.keyboard.backtick = mglCharToKeycode({'5'}); % that's the backtick
+myscreen.keyboard.nums = mglCharToKeycode({'1' '2' '3' '4'    '6' '7' '8' '9' '0'});
+
+% set the first task to be the fixation staircase task
+[task{1} myscreen] = fixStairInitTask(myscreen);
+
+% set our task to have two phases.
+% one starts out with nothing on the screen...
+task{2}{1}.waitForBacktick = 1;
+task{2}{1}.seglen = 0;
+task{2}{1}.numBlocks = 1;
+task{2}{1}.parameter.showimage = 0;
+task{2}{1}.parameter.category = 0;
+
+% block design timing, during the first chunk of segments we'll show some images
+% blank during the second chunk
+task{2}{2}.numTrials = numBlocks; %number of trials to go through / blocks of on/off
+myscreen.blockDesign =  myscreen.TR*[myscreen.cycleLength myscreen.cycleLength]./2;
+blockInS = myscreen.cycleLength * myscreen.TR;
+
+% make it so that an image is shown every second, but for cycleLength/2 ON
+task{2}{2}.seglen = ...
+    [ones(1,blockInS/2) ones(1,blockInS/2)]
+
+task{2}{2}.parameter.category = [1 2]; % 1=faces, 2=objects
+task{2}{2}.random = 0; % face , object, face, object, ...
+
+% initialize our task
+for phaseNum = 1:length(task{2})
+  [task{2}{phaseNum} myscreen] = initTask(task{2}{phaseNum},myscreen,@startSegmentCallback,@updateScreenCallback,[],[],[],[]);
+end
+
+% init the stimulus
+global stimulus;
+myscreen = initStimulus('stimulus',myscreen);
+% load in images and prep textures
+stimulus = initFaces(stimulus,myscreen);
+stimulus.displayWidth = 18; %  WAS 10!! decide how WIDE the stimuli should be
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% run the eye calibration
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% myscreen = eyeCalibDisp(myscreen);
+% skip this...
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Main display loop
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+phaseNum = 1;
+myscreen.t0 = mglGetSecs();
+
+while (phaseNum <= length(task{2})) && ~myscreen.userHitEsc
+  % update the dots
+  [task{2} myscreen phaseNum] = updateTask(task{2},myscreen,phaseNum);
+  % update the fixation task
+  [task{1} myscreen] = updateTask(task{1},myscreen,1);
+  % flip screen
+  myscreen = tickScreen(myscreen,task);
+end
+
+% if we got here, we are at the end of the experiment
+myscreen = endTask(myscreen,task);
+
+% save out some text files for this experiment
+makeFSLfiles(myscreen, task)
+
+end
+
+function [] = makeFSLfiles(myscreen, task)
+% makeFSLfiles - save out files of stimulus descriptions...
+%
+
+% faces:
+d = datestr(now, 30);
+
+% objects:
+
+
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% function that gets called at the start of each segment
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+function [task myscreen] = startSegmentCallback(task, myscreen)
+
+global stimulus;
+
+myscreen.currentCategory = task.thistrial.category;
+if task.thistrial.thisseg == 1
+  % print info about category
+  fprintf('current category: %d\n', myscreen.currentCategory);
+end
+
+% at this point we need to figure out if we are in the first half (REST) or
+% second half (STIMULUS). each segment is 1s long by design:
+
+oneCycle = myscreen.cycleLength * myscreen.TR;
+if (task.thistrial.thisseg > (oneCycle/2) ) && myscreen.currentCategory > 0
+  myscreen.t0 = mglGetSecs(myscreen.t0);
+  fprintf('timestamp: %.2f\n', myscreen.t0);
+  % if currentCategory == 0, then we are in the pre-phase of expt.
+  stimulus.faces.display = 1;
+  % at the beginning of each trial, pick a random image from our set of N
+  stimulus.faces.exemplar = randsample(stimulus.faces.n{ myscreen.currentCategory },1);
+else
+  stimulus.faces.display = 0;
+end
+
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% function that gets called to draw the stimulus each frame
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+function [task myscreen] = updateScreenCallback(task, myscreen)
+
+global stimulus
+mglClearScreen(0.5); % 
+
+if stimulus.faces.display
+  stimulus = updateFaces(stimulus,myscreen);
+end
+
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% function at the start or each block ...
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+function [task myscreen] = startBlockCallback(task, myscreen)
+
+disp('startblock');
+
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% function at the start or each trial ...
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+function [task myscreen] = startTrialCallback(task, myscreen)
+
+disp('starttrialcallback');
+fprintf('trial #: %d, seg: %d SHOW: %d, ... CATEGORY: %d\n', task.trialnum,task.thistrial.thisseg, task.thistrial.showimage, task.thistrial.category)
+
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% function to init the image stimulus
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+function stimulus = initFaces(stimulus,myscreen)
+
+nCateogories = 2;
+disp('initFaces')
+
+MAX_IMAGES_TO_LOAD = 50;
+
+% stim directories are hard-coded. Could do better here.
+% imdir{1} = './stims/multiracial/frontal/';
+imdir{1} = './scene_localiser/images/';
+files{1} = dir([imdir{1} 'face_*.png']);
+nFiles{1} = min(MAX_IMAGES_TO_LOAD, length(files{1}));
+
+% imdir{2} = './stims/objects/';
+imdir{2} ='./scene_localiser/images/';
+files{2} = dir([imdir{2} 'object*.png']);
+nFiles{2} = min(MAX_IMAGES_TO_LOAD, length(files{2}));
+
+% imdir{3} = './stims/houses/';
+% files{3} = dir([imdir{3} '*.jpg']);
+% nFiles{3} = min(MAX_IMAGES_TO_LOAD, length(files{3}));
+
+% stimulusImages = cell(nFiles);
+
+for iCat = 1:numel(imdir)
+    for iFile = 1:nFiles{iCat}
+      fprintf('loading file #%d, name:%s\n',iFile,files{iCat}(iFile).name);
+      im = []; im2 = []; % must be a faster way to do this.
+      im = imread(fullfile(imdir{iCat}, files{iCat}(iFile).name));
+
+      %NB! jpeg image is read in as RGB triplet, but we want RGBA
+      imdims = size(im);
+      im2 = reshape(im, imdims(1).*imdims(2), []); % x*y, RGBA
+      im2(:,4) = 255.0; % add transparency layer and also makes it FLOAT!!
+      
+      WHITE_CUTOFF = 254;
+      GRAY_VAL = 127;
+      
+      % place on textured noise?
+      idx = im2(:,1) > WHITE_CUTOFF & im2(:,2) > WHITE_CUTOFF & im2(:,3) > WHITE_CUTOFF; 
+      im2(idx,4) = 0; % make transparent.
+      im2 = permute(reshape(im2, imdims(1), imdims(2), []), [3, 1, 2]);
+      % keyboard
+      
+      % grayscale option:
+      %im = double(rgb2gray(imread(fullfile(imdir{iCat}, files{iCat}(iFile).name))));
+
+      mglClearScreen(0.5); % white bg
+      stimulus.faces.tex{iCat}(iFile) = mglCreateTexture(im2);
+    end
+    stimulus.faces.n{iCat} = nFiles{iCat};
+end
+
+end
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% function to update dot positions and draw them to screen
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+function stimulus = updateFaces(stimulus,myscreen)
+
+if stimulus.faces.display
+  % pick the appropriate texture for this display
+  tex = stimulus.faces.tex{ myscreen.currentCategory }(stimulus.faces.exemplar);
+  aspectRatio = tex.imageWidth ./ tex.imageHeight;
+  % usedt o blt textures. 180� / upside down as images are read in that way.
+  % now with mglMetal
+  mglBltTexture(tex,...
+      [0, 0, stimulus.displayWidth, stimulus.displayWidth/aspectRatio], ...
+       0, 0, 0);
+end
+
+end
